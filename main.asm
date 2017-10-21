@@ -38,17 +38,17 @@
 	ldi counterL, 25
 	ldi counterM, 90
 	ldi counterH, 178
-	print_wait_loop: ; add delay for readability
+	dec_wait_loop: ; I made the wait loop a macro to make code neater
 		dec counterH
-		brne print_wait_loop
+		brne dec_wait_loop
 		dec counterM
-		brne print_wait_loop
+		brne dec_wait_loop
 		dec counterL
-		brne print_wait_loop
+		brne dec_wait_loop
 		nop
 .endmacro
 .cseg
-stationsStrCon: .db "Please type the max number of stations: ",0,0
+stationsStrCon: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
 
 jmp RESET
 
@@ -80,41 +80,41 @@ RESET:
 rjmp init
 
 init:
-	ldi zl, low(stationsStrCon)
+	ldi zl, low(stationsStrCon) ; point to memory location of first string
 	ldi zh, high(stationsStrCon)
 	clr display_counter
 	PRINT_STR:
-		cpi display_counter, 16
-		breq RESET_CURSOR
-		lpm r17, z+
-		tst r17
+		cpi display_counter, 16 ; if the first line has been used up, start scrolling
+		breq SCROLL_CURSOR
+		lpm r17, z+ ; get value of byte of string then increment pointer
+		tst r17 ; test if the value of the byte is null (i.e. it's the end of the string)
 		breq END_PRINT_STR
-		do_lcd_data r17
+		do_lcd_data r17 ; print the character
 		wait_loop
 		inc display_counter
 		rjmp PRINT_STR
-RESET_CURSOR:
-	cpi display_counter, 40
+SCROLL_CURSOR:
+	cpi display_counter, 40 ; see if the screen is at the end of its length
 	breq CLEAR_SCREEN 
-	do_lcd_command 0b00011000 ; shift display
+	do_lcd_command 0b00011000 ; shift display (allows scrolling)
 	lpm r17, z+
 	tst r17
 	breq END_PRINT_STR
 	do_lcd_data r17
 	wait_loop
 	inc display_counter
-	rjmp RESET_CURSOR
+	rjmp SCROLL_CURSOR
 
-CLEAR_SCREEN:
-	do_lcd_command 0b00010100 ; increment, no display shift
+CLEAR_SCREEN: ; I'll need to put something here if we have lines more than 40 characters.. let's try not to
+	;do_lcd_command 0b00010100 ; increment, no display shift
 	clr display_counter
 	rjmp PRINT_STR
 
 END_PRINT_STR:
 	do_lcd_command 0b00000010 ; move cursor home
 	clr display_counter
-	INC_CURSOR:
-		cpi display_counter, 40
+	INC_CURSOR: ; move cursor to the first place in the second line
+		cpi display_counter, 40 
 		breq FIN_INC
 		do_lcd_command 0b00010100 ; increment, display shift
 		inc display_counter
