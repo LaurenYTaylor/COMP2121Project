@@ -11,8 +11,6 @@
 
 .include "m2560def.inc"
 .def numStats=r3
-.def tempVar=r14
-.def numPressed=r15
 .def temp =r16
 .def row =r17
 .def col =r18
@@ -60,7 +58,6 @@ tooManyStats: .db "Number of stations must be less than 10.",0,0
 
 
 RESET:
-    clr numPressed
 	ldi temp, low(RAMEND)
 	out SPL, temp
 	ldi temp, high(RAMEND)
@@ -95,7 +92,7 @@ init:
 keypad_scanner:
 		ldi mask, INITCOLMASK ; initial column mask
 		clr col ; initial column
-	colloop:
+		colloop:
 		STS PORTL, mask ; set column to mask value
 		; (sets column 0 off)
 		ldi temp, 0xFF ; implement a delay so the
@@ -150,29 +147,21 @@ keypad_scanner:
 		inc temp ; add 1. Value of switch is
 		; row*3 + col + 1.
 		clr r22
-		cp numPressed,r22 ; check if we're waiting for a letter
+		cp numStats,r22 ; check if numStats already has a digit
 		breq FIRST_DIGIT
-        mov temp, tempVar ; copy temp to tempVar
-        subi tempvar, 2
-        ldi r13, 3
-        mul r13, tempvar
-        mov tempVar, r0
-        add tempVar, row
-        inc tempVar
-        mov temp, tempVar
-        subi temp, -'A'
+		ldi r22, 10
+		mul numStats, r22
+		mov numStats, r0
+		add numStats, temp
+		subi temp, -48
 		rjmp screen_write
 	FIRST_DIGIT:
-        clr tempVar
-        inc numPressed
 		mov numStats, temp
 		subi temp, -48
 		rjmp screen_write
 	letters:
 		ldi temp, 'A' ; 
 		add temp, row ; increment from 1 (A in ASCII) by the row value
-        cpi temp, 'D'
-        breq END_INPUT
 		rjmp screen_write
 	symbols:
 		cpi col, 0 ; check if we have a star
@@ -190,7 +179,6 @@ keypad_scanner:
 		ldi temp, '0'
 	screen_write:
 		mov symbol, temp
-        cp r24, temp
 		do_lcd_data symbol
 		rjmp set_decrementers
 		do_lcd_data symbol
@@ -350,33 +338,3 @@ sleep_5ms:
  rcall sleep_1ms
  rcall sleep_1ms
  ret
-
-
-
-
-READ_LOCATION:
-    ; pre
-    push r16
-    push r17
-    push r18
-    push r19
-    push r20
-    push r21
-    push r22
-    push r23
-    push r24
-    push r25
-
-
-
-    ; post
-    pop r25
-    pop r24
-    pop r23
-    pop r22
-    pop r21
-    pop r20
-    pop r19
-    pop r18
-    pop r17
-    pop r16
