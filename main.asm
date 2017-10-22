@@ -152,19 +152,15 @@ keypad_scanner:
 		clr r22
 		cp numPressed,r22 ; check if we're waiting for a letter
 		breq FIRST_DIGIT
-        mov tempVar, temp ; copy temp to tempVar
-		mov r24, tempvar
-		subi r24, 2
-		mov tempvar, r24
-		clr r24
-        ldi r24, 3
-        mul r24, tempvar
+        mov temp, tempVar ; copy temp to tempVar
+        subi tempvar, 2
+        ldi r13, 3
+        mul r13, tempvar
         mov tempVar, r0
         add tempVar, row
         inc tempVar
         mov temp, tempVar
         subi temp, -'A'
-		do_lcd_command 0b00010000
 		rjmp screen_write
 	FIRST_DIGIT:
         clr tempVar
@@ -188,7 +184,7 @@ keypad_scanner:
 		brlt END_INPUT; if the hash is pressed and the monorail isn't running, end input
 	star:
 		ldi temp, '*' ; 42 is star in ASCII
-		do_lcd_command 0b00010000 ; turns * into a back button to fix typos
+		do_lcd_command 0b00010000 ; turns A into a back button to fix typos
 		rjmp set_decrementers
 	zero:
 		ldi temp, '0'
@@ -215,7 +211,6 @@ NAME_STATIONS:
 	do_lcd_command 0b00000001
 	load_string nameStatStr
 	rcall PRINT_STR
-	rjmp keypad_scanner
 	halt: rjmp halt
 
 
