@@ -10,14 +10,15 @@
 ; extended I/O. Typically "LDS" and "STS" combined with "SBRS", "SBRC", "SBR", and "CBR".
 
 .include "m2560def.inc"
-.def numStats=r3
 .def temp =r16
 .def row =r17
 .def col =r18
 .def mask =r19
 .def temp2 =r20
 .def symbol = r21
-.def programCounter=r23
+.def counterL=r22
+.def counterM=r23
+.def counterH=r24
 .def display_counter=r25
 .equ PORTLDIR = 0xF0
 .equ INITCOLMASK = 0xEF
@@ -34,29 +35,25 @@
 	 rcall lcd_wait
 .endmacro
 .macro wait_loop
-	ldi r22, 25
-	ldi r23, 90
-	ldi r24, 178
+	ldi counterL, 25
+	ldi counterM, 90
+	ldi counterH, 178
 	dec_wait_loop: ; I made the wait loop a macro to make code neater
-		dec r24
+		dec counterH
 		brne dec_wait_loop
-		dec r23
+		dec counterM
 		brne dec_wait_loop
-		dec r22
+		dec counterL
 		brne dec_wait_loop
 		nop
 .endmacro
-.macro load_string
-	ldi zl, low(@0<<1) ; point to memory location of string
-	ldi zh, high(@0<<1)
-	clr display_counter
-.endmacro
 .cseg
-numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
-nameStatStr: .db "Please type the name of Station ",0,0
-tooManyStats: .db "Number of stations must be less than 10.",0,0
+stationsStrCon: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
+
+jmp RESET
 
 
+.org 0x72
 RESET:
 	ldi temp, low(RAMEND)
 	out SPL, temp
@@ -80,14 +77,51 @@ RESET:
 	do_lcd_command 0b00000001 ; clear display
 	do_lcd_command 0b00000110 ; increment, no display shift
 	do_lcd_command 0b00001110 ; Cursor on, bar, no blink
-	clr numStats
-	clr programCounter
+rjmp init
 
 init:
-	do_lcd_command 0b00000001
-	clr numStats
-	load_string numStatStr
-	rcall PRINT_STR
+	ldi zl, low(stationsStrCon) ; point to memory location of first string
+	ldi zh, high(stationsStrCon)
+	clr display_counter
+	PRINT_STR:
+		cpi display_counter, 16 ; if the first line has been used up, start scrolling
+		breq SCROLL_CURSOR
+		lpm r17, z+ ; get value of byte of string then increment pointer
+		tst r17 ; test if the value of the byte is null (i.e. it's the end of the string)
+		breq END_PRINT_STR
+		do_lcd_data r17 ; print the character
+		wait_loop
+		inc display_counter
+		rjmp PRINT_STR
+SCROLL_CURSOR:
+	cpi display_counter, 40 ; see if the screen is at the end of its length
+	breq CLEAR_SCREEN 
+	do_lcd_command 0b00011000 ; shift display (allows scrolling)
+	lpm r17, z+
+	tst r17
+	breq END_PRINT_STR
+	do_lcd_data r17
+	wait_loop
+	inc display_counter
+	rjmp SCROLL_CURSOR
+
+CLEAR_SCREEN: ; I'll need to put something here if we have lines more than 40 characters.. let's try not to
+	;do_lcd_command 0b00010100 ; increment, no display shift
+	clr display_counter
+	rjmp PRINT_STR
+
+END_PRINT_STR:
+	do_lcd_command 0b00000010 ; move cursor home
+	clr display_counter
+	INC_CURSOR: ; move cursor to the first place in the second line
+		cpi display_counter, 40 
+		breq FIN_INC
+		do_lcd_command 0b00010100 ; increment, display shift
+		inc display_counter
+		rjmp INC_CURSOR
+	FIN_INC:
+		do_lcd_command 0b00000110 ; increment, no display shift
+		do_lcd_command 0b00001111 ; Cursor on, bar, blink
 
 keypad_scanner:
 		ldi mask, INITCOLMASK ; initial column mask
@@ -146,17 +180,6 @@ keypad_scanner:
 		; to get the offset from 1
 		inc temp ; add 1. Value of switch is
 		; row*3 + col + 1.
-		clr r22
-		cp numStats,r22 ; check if numStats already has a digit
-		breq FIRST_DIGIT
-		ldi r22, 10
-		mul numStats, r22
-		mov numStats, r0
-		add numStats, temp
-		subi temp, -48
-		rjmp screen_write
-	FIRST_DIGIT:
-		mov numStats, temp
 		subi temp, -48
 		rjmp screen_write
 	letters:
@@ -168,13 +191,11 @@ keypad_scanner:
 		breq star
 		cpi col, 1 ; or if we have zero
 		breq zero
-		do_lcd_command 0b00000001
-		cpi programCounter, 5
-		brlt END_INPUT; if the hash is pressed and the monorail isn't running, end input
+		ldi temp, '#' ; 
+		rjmp screen_write
 	star:
 		ldi temp, '*' ; 42 is star in ASCII
-		do_lcd_command 0b00010000 ; turns A into a back button to fix typos
-		rjmp set_decrementers
+		rjmp screen_write
 	zero:
 		ldi temp, '0'
 	screen_write:
@@ -185,75 +206,6 @@ keypad_scanner:
 	set_decrementers:
 		wait_loop
 		rjmp keypad_scanner ; return to caller
-
-
-END_INPUT:
-	inc programCounter
-	cpi programCounter, 1
-	breq NAME_STATIONS
-	
-NAME_STATIONS:
-	ldi r22, 10
-	cp r22, numStats ; if 10 is less than numStats, tell the user they have entered too many stations 
-	brlt TOO_MANY_STATIONS
-	do_lcd_command 0b00000001
-	load_string nameStatStr
-	rcall PRINT_STR
-	halt: rjmp halt
-
-
-TOO_MANY_STATIONS: ; gives error message and makes user re-enter a number less than 10
-	do_lcd_command 0b00000001
-	load_string tooManyStats
-	rcall PRINT_STR
-	clr numStats
-	clr display_counter
-	clr programCounter
-	jmp init
-
-
-
-
-PRINT_STR:
-		cpi display_counter, 16 ; if the first line has been used up, start scrolling
-		breq SCROLL_CURSOR
-		lpm r17, z+ ; get value of byte of string then increment pointer
-		tst r17 ; test if the value of the byte is null (i.e. it's the end of the string)
-		breq END_PRINT_STR
-		do_lcd_data r17 ; print the character
-		wait_loop
-		inc display_counter
-		rjmp PRINT_STR
-	SCROLL_CURSOR:
-		cpi display_counter, 40 ; see if the screen is at the end of its length
-		breq CLEAR_SCREEN 
-		do_lcd_command 0b00011000 ; shift display (allows scrolling)
-		lpm r17, z+
-		tst r17
-		breq END_PRINT_STR
-		do_lcd_data r17
-		wait_loop
-		inc display_counter
-		rjmp SCROLL_CURSOR
-	CLEAR_SCREEN: ; I'll need to put something here if we have lines more than 40 characters.. let's try not to
-		;do_lcd_command 0b00010100 ; increment, no display shift
-		clr display_counter
-		rjmp PRINT_STR
-	END_PRINT_STR:
-		do_lcd_command 0b00000010 ; move cursor home
-		clr display_counter
-		INC_CURSOR: ; move cursor to the first place in the second line
-			cpi display_counter, 40 
-			breq FIN_INC
-			do_lcd_command 0b00010100 ; increment, display shift
-			inc display_counter
-			rjmp INC_CURSOR
-		FIN_INC:
-			do_lcd_command 0b00000110 ; increment, no display shift
-			do_lcd_command 0b00001111 ; Cursor on, bar, blink
-	ret
-
-
 
 .equ LCD_RS = 7
 .equ LCD_E = 6
