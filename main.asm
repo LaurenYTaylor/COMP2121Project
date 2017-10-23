@@ -11,6 +11,10 @@
 
 .include "m2560def.inc"
 .def numStats=r3
+.def holder=r4
+.def numPressed = r13
+.def tempVar = r14
+.def numLetters = r15
 .def temp =r16
 .def row =r17
 .def col =r18
@@ -18,22 +22,41 @@
 .def temp2 =r20
 .def symbol = r21
 .def programCounter=r23
+.def workingRegister = r24
 .def display_counter=r25
 .equ PORTLDIR = 0xF0
 .equ INITCOLMASK = 0xEF
 .equ INITROWMASK = 0x01
 .equ ROWMASK = 0x0F
 .macro do_lcd_command
+	push r16
 	 ldi r16, @0
 	 rcall lcd_command
 	 rcall lcd_wait
+	pop r16
 .endmacro
 .macro do_lcd_data
+	push r16
 	 mov r16, @0
 	 rcall lcd_data
 	 rcall lcd_wait
+	pop r16
 .endmacro
 .macro wait_loop
+	push r22
+	push r23
+	push r24
+
+	ldi  r22, 5
+    ldi  r23, 15
+    ldi  r24, 24
+	L1: dec  r20
+		brne L1
+		dec  r23
+		brne L1
+		dec  r22
+		brne L1
+/*
 	ldi r22, 25
 	ldi r23, 90
 	ldi r24, 178
@@ -45,6 +68,10 @@
 		dec r22
 		brne dec_wait_loop
 		nop
+*/
+	pop r24
+	pop r23
+	pop r22
 .endmacro
 .macro load_string
 	ldi zl, low(@0<<1) ; point to memory location of string
@@ -58,6 +85,7 @@ tooManyStats: .db "Number of stations must be less than 10.",0,0
 
 
 RESET:
+	clr tempVar
 	ldi temp, low(RAMEND)
 	out SPL, temp
 	ldi temp, high(RAMEND)
@@ -146,6 +174,7 @@ keypad_scanner:
 		; to get the offset from 1
 		inc temp ; add 1. Value of switch is
 		; row*3 + col + 1.
+		mov numPressed, temp
 		clr r22
 		cp numStats,r22 ; check if numStats already has a digit
 		breq FIRST_DIGIT
@@ -160,9 +189,30 @@ keypad_scanner:
 		subi temp, -48
 		rjmp screen_write
 	letters:
+		;cpi programCounter, 1
+		;breq correct_last_num
 		ldi temp, 'A' ; 
 		add temp, row ; increment from 1 (A in ASCII) by the row value
-		rjmp screen_write
+		;rjmp screen_write
+		correct_last_num:
+			do_lcd_command 0b00010000 ; move cursor back 1 place
+			wait_loop
+			mov workingRegister, numPressed
+			subi workingRegister, 2
+			ldi display_counter, 3 ; display_counter is used as a working register here
+			mul workingRegister, display_counter ; as it is only used for printing a string
+			mov workingRegister, r0
+			add workingRegister, temp
+			cpi workingRegister, 'Q'
+			brlt no_change ; handles the lack of Q on a keyboard
+			subi workingRegister, -1
+			no_change:
+				mov temp, workingRegister
+				;subi temp, -48
+				rjmp screen_write
+			
+			;mov temp, workingRegister
+			;rjmp screen_write
 	symbols:
 		cpi col, 0 ; check if we have a star
 		breq star
@@ -173,7 +223,7 @@ keypad_scanner:
 		brlt END_INPUT; if the hash is pressed and the monorail isn't running, end input
 	star:
 		ldi temp, '*' ; 42 is star in ASCII
-		do_lcd_command 0b00010000 ; turns A into a back button to fix typos
+		do_lcd_command 0b00010000 ; turns * into a back button to fix typos
 		rjmp set_decrementers
 	zero:
 		ldi temp, '0'
@@ -199,6 +249,8 @@ NAME_STATIONS:
 	do_lcd_command 0b00000001
 	load_string nameStatStr
 	rcall PRINT_STR
+	ldi programCounter, 1 ; REMOVE IF UNHELPFUL
+	rjmp keypad_scanner
 	halt: rjmp halt
 
 
