@@ -46,7 +46,7 @@
 	push r22
 	push r23
 	push r24
-
+/*
 	ldi  r22, 5
     ldi  r23, 15
     ldi  r24, 24
@@ -56,7 +56,7 @@
 		brne L1
 		dec  r22
 		brne L1
-/*
+*/
 	ldi r22, 25
 	ldi r23, 90
 	ldi r24, 178
@@ -68,7 +68,7 @@
 		dec r22
 		brne dec_wait_loop
 		nop
-*/
+
 	pop r24
 	pop r23
 	pop r22
@@ -80,7 +80,7 @@
 .endmacro
 .cseg
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
-nameStatStr: .db "Please type the name of Station ",0,0
+nameStatStr: .db "Please type name of Station ",0,0
 tooManyStats: .db "Number of stations must be less than 10.",0,0
 
 
@@ -189,11 +189,8 @@ keypad_scanner:
 		subi temp, -48
 		rjmp screen_write
 	letters:
-		;cpi programCounter, 1
-		;breq correct_last_num
 		ldi temp, 'A' ; 
 		add temp, row ; increment from 1 (A in ASCII) by the row value
-		;rjmp screen_write
 		correct_last_num:
 			do_lcd_command 0b00010000 ; move cursor back 1 place
 			wait_loop
@@ -206,21 +203,22 @@ keypad_scanner:
 			cpi workingRegister, 'Q'
 			brlt no_change ; handles the lack of Q on a keyboard
 			subi workingRegister, -1
-			no_change:
-				mov temp, workingRegister
-				;subi temp, -48
-				rjmp screen_write
-			
-			;mov temp, workingRegister
-			;rjmp screen_write
+		no_change:
+			mov temp, workingRegister
+			rjmp screen_write
 	symbols:
 		cpi col, 0 ; check if we have a star
 		breq star
 		cpi col, 1 ; or if we have zero
 		breq zero
 		do_lcd_command 0b00000001
+		mov workingRegister, holder
+		cpi workingRegister, 0
+		brge not_end
 		cpi programCounter, 5
 		brlt END_INPUT; if the hash is pressed and the monorail isn't running, end input
+	not_end:
+		rjmp PRINT_STRINGS
 	star:
 		ldi temp, '*' ; 42 is star in ASCII
 		do_lcd_command 0b00010000 ; turns * into a back button to fix typos
@@ -230,12 +228,9 @@ keypad_scanner:
 	screen_write:
 		mov symbol, temp
 		do_lcd_data symbol
-		rjmp set_decrementers
-		do_lcd_data symbol
 	set_decrementers:
 		wait_loop
 		rjmp keypad_scanner ; return to caller
-
 
 END_INPUT:
 	inc programCounter
@@ -245,13 +240,43 @@ END_INPUT:
 NAME_STATIONS:
 	ldi r22, 10
 	cp r22, numStats ; if 10 is less than numStats, tell the user they have entered too many stations 
-	brlt TOO_MANY_STATIONS
+	brge STAT_AMOUNT_OK
+	rjmp TOO_MANY_STATIONS
+STAT_AMOUNT_OK:
+	push temp
+	push workingRegister
+	mov workingRegister, numStats
+	mov holder, workingRegister
+PRINT_STRINGS:	
+	mov workingRegister, holder
+	cpi workingRegister, 0
+	brge CONTINUE
+	rjmp END_INPUT
+CONTINUE:
 	do_lcd_command 0b00000001
 	load_string nameStatStr
 	rcall PRINT_STR
-	ldi programCounter, 1 ; REMOVE IF UNHELPFUL
-	rjmp keypad_scanner
-	halt: rjmp halt
+	subi workingRegister, -48
+	do_lcd_data workingRegister
+	wait_loop
+	ldi workingRegister, ':'
+	do_lcd_data workingRegister
+	wait_loop
+	do_lcd_command 0b00000010 ; move cursor home
+	clr display_counter
+	INC_CURSOR2: ; move cursor to the first place in the second line
+		cpi display_counter, 40 
+		breq FIN_INC2
+		do_lcd_command 0b00010100 ; increment, display shift
+		inc display_counter
+		rjmp INC_CURSOR2
+	FIN_INC2:
+		do_lcd_command 0b00000110 ; increment, no display shift
+		do_lcd_command 0b00001111 ; Cursor on, bar, blink
+		dec holder
+		pop temp
+		pop workingRegister
+	jmp keypad_scanner
 
 
 TOO_MANY_STATIONS: ; gives error message and makes user re-enter a number less than 10
@@ -262,9 +287,6 @@ TOO_MANY_STATIONS: ; gives error message and makes user re-enter a number less t
 	clr display_counter
 	clr programCounter
 	jmp init
-
-
-
 
 PRINT_STR:
 		cpi display_counter, 16 ; if the first line has been used up, start scrolling
@@ -292,8 +314,14 @@ PRINT_STR:
 		clr display_counter
 		rjmp PRINT_STR
 	END_PRINT_STR:
+		;ldi programCounter, 1
+		cpi programCounter, 1
+		brlt MOVE_CURSOR
+		ret
+	MOVE_CURSOR:
 		do_lcd_command 0b00000010 ; move cursor home
 		clr display_counter
+		wait_loop
 		INC_CURSOR: ; move cursor to the first place in the second line
 			cpi display_counter, 40 
 			breq FIN_INC
