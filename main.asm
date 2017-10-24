@@ -9,6 +9,15 @@
 ; "CBI", and "SBI" instructions must be replaced with instructions that allow access to 
 ; extended I/O. Typically "LDS" and "STS" combined with "SBRS", "SBRC", "SBR", and "CBR".
 
+/*
+ * Tasks, counted in programCounter
+ * 1. Getting the num stations
+ * 2. Getting the station names
+ * 3. Getting the times between stations 
+ * 4. Getting the monorail stopping time
+ * 5. Running the monorail
+ */
+
 .include "m2560def.inc"
 .def numStats=r3
 .def holder=r4
@@ -19,16 +28,30 @@
 .def temp =r16
 .def row =r17
 .def col =r18
-.def mask =r19
+.def working2 =r19 ; things are only saved here while polling keybad
 .def temp2 =r20
 .def symbol = r21
 .def programCounter=r23
-.def workingRegister = r24
+.def workingRegister = r24 ; Nothing is saved here
 .def display_counter=r25
 .equ PORTLDIR = 0xF0
 .equ INITCOLMASK = 0xEF
 .equ INITROWMASK = 0x01
 .equ ROWMASK = 0x0F
+
+.macro xloaddaddr ; load address of data mem into x
+	ldi xl, low(@0)
+	ldi xh, high(@0)
+.endmacro
+.macro yloaddaddr 
+	ldi yl, low(@0)
+	ldi yh, high(@0)
+.endmacro
+.macro zloaddaddr ;
+	ldi zl, low(@0)
+	ldi zh, high(@0)
+.endmacro
+
 .macro do_lcd_command
 	push r16
 	 ldi r16, @0
@@ -55,7 +78,7 @@
 	push r23
 	push r24
 /*
-	ldi  r22, 5
+	ldi  r22, 5 ; This loop is quicker, for repeated testing
     ldi  r23, 15
     ldi  r24, 24
 	L1: dec  r20
@@ -102,16 +125,14 @@
 .endmacro
 
 .dseg
-statName1: .byte 10
-statName2: .byte 10
-statName3: .byte 10
-statName4: .byte 10
-statName5: .byte 10
-statName6: .byte 10
-statName7: .byte 10
-statName8: .byte 10
-statName9: .byte 10
-statName10: .byte 10
+/*
+ * Exists as a solid block in data memory. Each time "Enter station name x" is printed the pointer is aligned to relevant block of ten.
+ * After this, every time a number is entered the pointer is incremented by 1 (10x 1byte numbers representing times to next station)
+ */
+stationsMem .byte 110 ; 10*letters * 10 stations + 10 numbers (timings)
+stationTimes .byte 10 ; NOT USED CURRENTLY (24/10/17, Lach). Considering saving Names and Times separately
+stopTime .byte 1
+
 
 .cseg
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
@@ -126,6 +147,7 @@ finalStr1: .db "Configuration complete.",0
 finalStr2: .db "Please wait 5 seconds.",0,0
 
 RESET:
+    zloadaddr stopTime ; point z to memory allocated to hold the stop time
 	clr tempVar
 	ldi temp, low(RAMEND)
 	out SPL, temp
@@ -159,10 +181,10 @@ init:
 	rcall PRINT_STR
 
 keypad_scanner:
-		ldi mask, INITCOLMASK ; initial column mask
+		ldi working2, INITCOLMASK ; initial column mask
 		clr col ; initial column
 		colloop:
-		STS PORTL, mask ; set column to mask value
+		STS PORTL, working2 ; set column to mask value
 		; (sets column 0 off)
 		ldi temp, 0xFF ; implement a delay so the
 		; hardware can stabilize
@@ -173,26 +195,26 @@ keypad_scanner:
 		andi temp, ROWMASK ; read only the row bits
 		cpi temp, 0xF ; check if any rows are grounded
 		breq nextcol ; if not go to the next column
-		ldi mask, INITROWMASK ; initialise row check
+		ldi working2, INITROWMASK ; initialise row check
 		clr row ; initial row
 	rowloop:      
 		mov temp2, temp
-		and temp2, mask ; check masked bit
+		and temp2, working2 ; check masked bit
 		brne skipconv ; if the result is non-zero,
 		; we need to look again
 		rcall convert ; if bit is clear, convert the bitcode
 		jmp keypad_scanner ; and start again
 	skipconv:
 		inc row ; else move to the next row
-		lsl mask ; shift the mask to the next bit
+		lsl working2 ; shift the mask to the next bit
 		jmp rowloop          
 	nextcol:     
-		cpi col, 3 ; check if we^Òre on the last column
+		cpi col, 3 ; check if we're on the last column
 		breq keypad_scanner ; if so, no buttons were pushed,
 		; so start again.
 		sec ; else shift the column mask:
 		; We must set the carry bit
-		rol mask ; and then rotate left by a bit,
+		rol working2 ; and then rotate left by a bit,
 		; shifting the carry into
 		; bit zero. We need this to make
 		; sure all the rows have
@@ -219,7 +241,7 @@ keypad_scanner:
 		cpi programCounter, 1
 		breq SKIP_MATHS
 		cpi programCounter, 2
-		breq SKIP_MATHS
+		breq SAVE
 		cpi programCounter, 3
 		breq SKIP_MATHS
 		clr r22
@@ -229,8 +251,10 @@ keypad_scanner:
 		mul numStats, r22
 		mov numStats, r0
 		add numStats, temp
+        rjmp SKIP_MATHS ; not actually skipping maths, but that label was in a convenient place
 	SKIP_MATHS:
 		subi temp, -48
+        st x+, temp ; save time in data memory
 		rjmp screen_write
 	FIRST_DIGIT:
 		mov numStats, temp
@@ -243,6 +267,9 @@ keypad_scanner:
 		breq PRINT_SPACE
 		correct_last_num:
 			do_lcd_command 0b00010000 ; move cursor back 1 place
+            ld workingRegister, xl ; move x pointer back a space, to overwrite last letter
+            subi workingRegister, 1
+            st xl, workingRegister
 			wait_loop
 			mov workingRegister, numPressed
 			subi workingRegister, 2
@@ -255,6 +282,7 @@ keypad_scanner:
 			subi workingRegister, -1
 		no_change:
 			mov temp, workingRegister
+            st x+, temp ; store (at this point it should be a letter?? ASCII value? TODO: check) letter in data mem
 			rjmp screen_write
 	PRINT_SPACE:
 		ldi temp, 32
@@ -309,6 +337,7 @@ PRINT_NAMING_STRINGS:
 CONTINUE:
 	do_lcd_command 0b00000001
 	load_string nameStatStr
+    rcall adjustX ; set pointer to (holder - 1)*10 + stationsMem
 	rcall PRINT_STR
 	mov workingRegister, holder
 	subi workingRegister, -48
@@ -542,3 +571,21 @@ sleep_5ms:
  rcall sleep_1ms
  rcall sleep_1ms
  ret
+
+ adjustX:
+    ; prelogue
+    push working2
+
+    ; body
+    mov workingRegister, holder
+    ldi working2, 10
+    mul workingRegister, working2
+    mov workingRegister, r0 ; number already saved * 10 (to get the offset from initial pointer)
+    xloaddaddr stationsMem ; load initial pointer to x
+    ld working2, xl
+    add working2, workingRegister ; add offset to initial pointer
+    st xl, working2 ; store as x
+
+    ; prologue
+    pop working2
+    ret;
