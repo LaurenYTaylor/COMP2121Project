@@ -12,6 +12,7 @@
 .include "m2560def.inc"
 .def numStats=r3
 .def holder=r4
+.def holder2=r5
 .def numPressed = r13
 .def tempVar = r14
 .def numLetters = r15
@@ -36,8 +37,15 @@
 	pop r16
 .endmacro
 .macro do_lcd_data
-	push r16
+	 push r16
 	 mov r16, @0
+	 rcall lcd_data
+	 rcall lcd_wait
+	pop r16
+.endmacro
+.macro do_lcd_data_const
+	 push r16
+	 ldi r16, @0
 	 rcall lcd_data
 	 rcall lcd_wait
 	pop r16
@@ -57,6 +65,7 @@
 		dec  r22
 		brne L1
 */
+
 	ldi r22, 25
 	ldi r23, 90
 	ldi r24, 178
@@ -68,7 +77,7 @@
 		dec r22
 		brne dec_wait_loop
 		nop
-
+		
 	pop r24
 	pop r23
 	pop r22
@@ -78,11 +87,43 @@
 	ldi zh, high(@0<<1)
 	clr display_counter
 .endmacro
+.macro newline
+	do_lcd_command 0b00000010 ; move cursor home
+	clr display_counter
+	INC_CURSOR2: ; move cursor to the first place in the second line
+		cpi display_counter, 40 
+		breq FIN_INC2
+		do_lcd_command 0b00010100 ; increment, display shift
+		inc display_counter
+		rjmp INC_CURSOR2
+	FIN_INC2:
+		do_lcd_command 0b00000110 ; increment, no display shift
+		do_lcd_command 0b00001111 ; Cursor on, bar, blink
+.endmacro
+
+.dseg
+statName1: .byte 10
+statName2: .byte 10
+statName3: .byte 10
+statName4: .byte 10
+statName5: .byte 10
+statName6: .byte 10
+statName7: .byte 10
+statName8: .byte 10
+statName9: .byte 10
+statName10: .byte 10
+
 .cseg
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
-nameStatStr: .db "Please type name of Station ",0,0
+nameStatStr: .db "Please type the name of Station ",0,0
 tooManyStats: .db "Number of stations must be less than 10.",0,0
-
+timingStr1: .db "Time from Station ",0,0
+timingStr2: .db " to Station ",0,0
+timingStr3: .db " is:",0,0
+stopTimeStr1: .db "The stop time of the monorail at any",0,0
+stopTimeStr2: .db "station is: ",0,0
+finalStr1: .db "Configuration complete.",0
+finalStr2: .db "Please wait 5 seconds.",0,0
 
 RESET:
 	clr tempVar
@@ -175,6 +216,12 @@ keypad_scanner:
 		inc temp ; add 1. Value of switch is
 		; row*3 + col + 1.
 		mov numPressed, temp
+		cpi programCounter, 1
+		breq SKIP_MATHS
+		cpi programCounter, 2
+		breq SKIP_MATHS
+		cpi programCounter, 3
+		breq SKIP_MATHS
 		clr r22
 		cp numStats,r22 ; check if numStats already has a digit
 		breq FIRST_DIGIT
@@ -182,6 +229,7 @@ keypad_scanner:
 		mul numStats, r22
 		mov numStats, r0
 		add numStats, temp
+	SKIP_MATHS:
 		subi temp, -48
 		rjmp screen_write
 	FIRST_DIGIT:
@@ -191,6 +239,8 @@ keypad_scanner:
 	letters:
 		ldi temp, 'A' ; 
 		add temp, row ; increment from 1 (A in ASCII) by the row value
+		cpi temp, 'D'
+		breq PRINT_SPACE
 		correct_last_num:
 			do_lcd_command 0b00010000 ; move cursor back 1 place
 			wait_loop
@@ -206,19 +256,29 @@ keypad_scanner:
 		no_change:
 			mov temp, workingRegister
 			rjmp screen_write
+	PRINT_SPACE:
+		ldi temp, 32
+		rjmp screen_write
 	symbols:
 		cpi col, 0 ; check if we have a star
 		breq star
 		cpi col, 1 ; or if we have zero
 		breq zero
 		do_lcd_command 0b00000001
-		mov workingRegister, holder
-		cpi workingRegister, 0
-		brge not_end
-		cpi programCounter, 5
-		brlt END_INPUT; if the hash is pressed and the monorail isn't running, end input
-	not_end:
-		rjmp PRINT_STRINGS
+		cpi programCounter, 1
+		breq JUMP_TO_NAMING
+		cpi programCounter, 2
+		breq JUMP_TO_TIMING
+		cpi programCounter, 3
+		breq JUMP_TO_FINAL
+		inc programCounter; if the programCounter is at zero, prepare to name stations
+		rjmp NAME_STATIONS
+	JUMP_TO_NAMING:
+		rjmp PRINT_NAMING_STRINGS ; if programCounter at one, keep asking for station names
+	JUMP_TO_TIMING:
+		rjmp INC_STATION ; if programCounter at two, keep asking for travel times
+	JUMP_TO_FINAL:
+		rjmp FINAL_STRING ; if pC at three, jump to configuration complete string
 	star:
 		ldi temp, '*' ; 42 is star in ASCII
 		do_lcd_command 0b00010000 ; turns * into a back button to fix typos
@@ -232,52 +292,35 @@ keypad_scanner:
 		wait_loop
 		rjmp keypad_scanner ; return to caller
 
-END_INPUT:
-	inc programCounter
-	cpi programCounter, 1
-	breq NAME_STATIONS
-	
 NAME_STATIONS:
 	ldi r22, 10
 	cp r22, numStats ; if 10 is less than numStats, tell the user they have entered too many stations 
 	brge STAT_AMOUNT_OK
 	rjmp TOO_MANY_STATIONS
 STAT_AMOUNT_OK:
-	push temp
-	push workingRegister
-	mov workingRegister, numStats
-	mov holder, workingRegister
-PRINT_STRINGS:	
-	mov workingRegister, holder
-	cpi workingRegister, 0
-	brge CONTINUE
-	rjmp END_INPUT
+	clr holder
+PRINT_NAMING_STRINGS:	
+	inc holder
+	cp holder, numStats
+	brlt CONTINUE
+	cp holder, numStats
+	breq CONTINUE
+	rjmp ENTER_TIMES
 CONTINUE:
 	do_lcd_command 0b00000001
 	load_string nameStatStr
 	rcall PRINT_STR
+	mov workingRegister, holder
 	subi workingRegister, -48
 	do_lcd_data workingRegister
+	subi workingRegister, 48
 	wait_loop
-	ldi workingRegister, ':'
-	do_lcd_data workingRegister
+	do_lcd_command 0b00011000
+	do_lcd_data_const ':'
 	wait_loop
-	do_lcd_command 0b00000010 ; move cursor home
-	clr display_counter
-	INC_CURSOR2: ; move cursor to the first place in the second line
-		cpi display_counter, 40 
-		breq FIN_INC2
-		do_lcd_command 0b00010100 ; increment, display shift
-		inc display_counter
-		rjmp INC_CURSOR2
-	FIN_INC2:
-		do_lcd_command 0b00000110 ; increment, no display shift
-		do_lcd_command 0b00001111 ; Cursor on, bar, blink
-		dec holder
-		pop temp
-		pop workingRegister
+	wait_loop
+	newline
 	jmp keypad_scanner
-
 
 TOO_MANY_STATIONS: ; gives error message and makes user re-enter a number less than 10
 	do_lcd_command 0b00000001
@@ -287,6 +330,88 @@ TOO_MANY_STATIONS: ; gives error message and makes user re-enter a number less t
 	clr display_counter
 	clr programCounter
 	jmp init
+
+; holder holds the number of the 'From' station in the string,
+; holder2 holds the number of the 'To' station
+; i.e. the complete string is: "The time from Station "+holder+" to Station "+holder2+" is: "
+ENTER_TIMES:
+	inc programCounter
+	clr holder
+INC_STATION:
+	clr holder2
+	inc holder
+	mov holder2, holder
+	cp holder,numStats
+	brlt CHECK_TO_STATION
+	cp holder,numStats
+	breq CHECK_TO_STATION
+	rjmp MONO_STOP_TIME
+CHECK_TO_STATION:
+	inc holder2
+	cp holder2, numStats
+	brlt PRINT_TIMING_STRINGS
+	cp holder2, numStats
+	breq PRINT_TIMING_STRINGS
+	ldi workingRegister, 1 ; 
+	mov holder2, workingRegister
+PRINT_TIMING_STRINGS:
+	do_lcd_command 0b00000001
+	load_string timingStr1 ; load the first part of the timing string
+	rcall PRINT_STR
+	mov workingRegister, holder
+	subi workingRegister, -48
+	do_lcd_data workingRegister ; print the 'From' station
+	subi workingRegister, 48
+	wait_loop
+	load_string timingStr2 ; print the second part of the timing string
+	rcall SCROLL_CURSOR
+	mov workingRegister, holder2
+	subi workingRegister, -48
+	do_lcd_data workingRegister ; print the 'To' station
+	subi workingRegister, 48
+	wait_loop
+	load_string timingStr3 ; print the last part of the timing string
+	rcall SCROLL_CURSOR
+	wait_loop
+	newline
+	jmp keypad_scanner
+
+MONO_STOP_TIME:
+	inc programCounter 
+	do_lcd_command 0b00000001
+	load_string stopTimeStr1 ; load first part of string that asks for stop time
+	rcall PRINT_STR
+	wait_loop
+	wait_loop
+	newline
+	load_string stopTimeStr2 ; load second part of string that asks for stop time
+	rcall PRINT_STR
+	jmp keypad_scanner
+	FINAL_STRING:
+		do_lcd_command 0b00000001
+		load_string finalStr1 ; load the first part of configuration complete string
+		rcall PRINT_STR
+		wait_loop
+		newline
+		load_string finalStr2 ; load the second part of configuration complete string
+		rcall PRINT_STR
+		ldi  r18, 2 ; WAIT 5 SECONDS as per assignment specification
+		ldi  r19, 150
+		ldi  r20, 216
+		ldi  r21, 9
+		L1: dec  r21
+		brne L1
+		dec  r20
+		brne L1
+		dec  r19
+		brne L1
+		dec  r18
+		brne L1
+		rjmp PC+1
+		do_lcd_command 0b00000001 ; clear screen
+		do_lcd_data_const '#' ; print a hash when to show the 5 seconds is up then loop forever
+		halt: rjmp halt
+
 
 PRINT_STR:
 		cpi display_counter, 16 ; if the first line has been used up, start scrolling
@@ -299,8 +424,8 @@ PRINT_STR:
 		inc display_counter
 		rjmp PRINT_STR
 	SCROLL_CURSOR:
-		cpi display_counter, 40 ; see if the screen is at the end of its length
-		breq CLEAR_SCREEN 
+		;cpi display_counter, 40 ; see if the screen is at the end of its length
+;		breq CLEAR_SCREEN 
 		do_lcd_command 0b00011000 ; shift display (allows scrolling)
 		lpm r17, z+
 		tst r17
@@ -309,14 +434,13 @@ PRINT_STR:
 		wait_loop
 		inc display_counter
 		rjmp SCROLL_CURSOR
-	CLEAR_SCREEN: ; I'll need to put something here if we have lines more than 40 characters.. let's try not to
+	;CLEAR_SCREEN: ; I'll need to put something here if we have lines more than 40 characters.. let's try not to
 		;do_lcd_command 0b00010100 ; increment, no display shift
-		clr display_counter
-		rjmp PRINT_STR
+		;clr display_counter
+		;rjmp PRINT_STR
 	END_PRINT_STR:
-		;ldi programCounter, 1
-		cpi programCounter, 1
-		brlt MOVE_CURSOR
+		cpi programCounter, 0
+		breq MOVE_CURSOR
 		ret
 	MOVE_CURSOR:
 		do_lcd_command 0b00000010 ; move cursor home
