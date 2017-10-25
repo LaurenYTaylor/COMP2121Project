@@ -88,7 +88,6 @@
 		brne L1
 		dec  r22
 		brne L1
-
 /*
 	ldi r22, 25
 	ldi r23, 90
@@ -101,7 +100,7 @@
 		dec r22
 		brne dec_wait_loop
 		nop
-	*/	
+*/
 	pop r24
 	pop r23
 	pop r22
@@ -130,12 +129,18 @@
  * Exists as a solid block in data memory. Each time "Enter station name x" is printed the pointer is aligned to relevant block of ten.
  * After this, every time a number is entered the pointer is incremented by 1 (10x 1byte numbers representing times to next station)
  */
-stationsMem: .byte 110 ; 10*letters * 10 stations + 10 numbers (timings)
-stationTimes: .byte 10 ; NOT USED CURRENTLY (24/10/17, Lach). Considering saving Names and Times separately
-stopTime: .byte 1
+stationsMem: .byte 110 ; 11*letters * 10 stations
+stationTimes: .byte 20 ; 
+stopTime: .byte 2
 
 
 .cseg
+.org 0x0
+jmp RESET
+.org INT0addr ; INT0addr is the address of EXT_INT0
+jmp EXT_INT0
+.org INT1addr ; INT1addr is the address of EXT_INT1
+jmp EXT_INT1
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
 nameStatStr: .db "Please type the name of Station ",0,0
 tooManyStats: .db "Number of stations must be less than 10.",0,0
@@ -172,8 +177,45 @@ RESET:
 	do_lcd_command 0b00000001 ; clear display
 	do_lcd_command 0b00000110 ; increment, no display shift
 	do_lcd_command 0b00001110 ; Cursor on, bar, no blink
+	; Set up push buttons
+	ser temp
+	out PORTD, temp
+	clr temp
+	out DDRD, temp
+	ldi temp, (2 << ISC10) | (2 << ISC00)
+	sts EICRA, temp
+	in temp, EIMSK
+	ori temp, (1<<INT0) | (1<<INT1)
+	out EIMSK, temp
 	clr numStats
 	clr programCounter
+	rjmp init
+
+EXT_INT0:
+	push temp
+	in temp, SREG
+	push temp
+	ldi r17, '0' 
+	do_lcd_data r17
+	wait_loop
+	pop temp
+	out SREG, temp
+	pop temp
+	sbi EIFR, INT0
+	reti
+
+EXT_INT1:
+	push temp
+	in temp, SREG
+	push temp
+	ldi r17, '1'
+	do_lcd_data r17
+	wait_loop
+	pop temp
+	out SREG, temp
+	pop temp
+	sbi EIFR, INT1
+	reti
 
 init:
 	do_lcd_command 0b00000001
@@ -256,10 +298,9 @@ keypad_scanner:
 		mul numStats, r22
 		mov numStats, r0
 		add numStats, temp
-        rjmp screen_write 
 	SKIP_MATHS:
-		subi temp, -48
         st x+, temp ; save time in data memory
+		subi temp, -48
 		rjmp screen_write
 	FIRST_DIGIT:
 		mov numStats, temp
@@ -307,14 +348,21 @@ keypad_scanner:
 		inc programCounter; if the programCounter is at zero, prepare to name stations
 		rjmp NAME_STATIONS
 	JUMP_TO_NAMING:
+		clr temp
+		st x+, temp
 		rjmp PRINT_NAMING_STRINGS ; if programCounter at one, keep asking for station names
 	JUMP_TO_TIMING:
+		clr temp
+		st x+, temp
 		rjmp INC_STATION ; if programCounter at two, keep asking for travel times
 	JUMP_TO_FINAL:
+		clr temp
+		st x+, temp
 		rjmp FINAL_STRING ; if pC at three, jump to configuration complete string
 	star:
 		ldi temp, '*' ; 42 is star in ASCII
 		do_lcd_command 0b00010000 ; turns * into a back button to fix typos
+		sbiw xh:xl, 1
 		rjmp set_decrementers
 	zero:
 		ldi temp, '0'
@@ -452,9 +500,14 @@ MONO_STOP_TIME:
 RUN_MONORAIL:
 	clr holder ; this will be used to determine what station the monorail is up to 
 	inc holder
+	inc holder
 	rcall adjustX
+KEEP_PRINTING:
 	ld r17, x+
+	tst r17
+	breq halt
 	do_lcd_data r17
+	rjmp KEEP_PRINTING
 	halt: rjmp halt
 
 
@@ -596,9 +649,9 @@ sleep_5ms:
     ; body
     mov workingRegister, holder
 	subi workingRegister, 1
-    ldi working2, 10
+    ldi working2, 11
     mul workingRegister, working2
-    mov workingRegister, r0 ; number already saved * 10 (to get the offset from initial pointer)
+    mov workingRegister, r0 ; number already saved * 11 (to get the offset from initial pointer)
     xloadaddr stationsMem ; load initial pointer to x
     add xl, workingRegister ; add offset to initial pointer
 	clr working2
