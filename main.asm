@@ -39,17 +39,17 @@
 .equ INITROWMASK = 0x01
 .equ ROWMASK = 0x0F
 
-.macro xloaddaddr ; load address of data mem into x
-	ldi xl, low(@0)
-	ldi xh, high(@0)
+.macro xloadaddr ; load address of data mem into x
+	ldi xl, low(@0<<1)
+	ldi xh, high(@0<<1)
 .endmacro
-.macro yloaddaddr 
-	ldi yl, low(@0)
-	ldi yh, high(@0)
+.macro yloadaddr 
+	ldi yl, low(@0<<1)
+	ldi yh, high(@0<<1)
 .endmacro
-.macro zloaddaddr ;
-	ldi zl, low(@0)
-	ldi zh, high(@0)
+.macro zloadaddr ;
+	ldi zl, low(@0<<1)
+	ldi zh, high(@0<<1)
 .endmacro
 
 .macro do_lcd_command
@@ -73,11 +73,12 @@
 	 rcall lcd_wait
 	pop r16
 .endmacro
+
 .macro wait_loop
 	push r22
 	push r23
 	push r24
-/*
+
 	ldi  r22, 5 ; This loop is quicker, for repeated testing
     ldi  r23, 15
     ldi  r24, 24
@@ -87,12 +88,12 @@
 		brne L1
 		dec  r22
 		brne L1
-*/
 
+/*
 	ldi r22, 25
 	ldi r23, 90
 	ldi r24, 178
-	dec_wait_loop: ; I made the wait loop a macro to make code neater
+	dec_wait_loop: 
 		dec r24
 		brne dec_wait_loop
 		dec r23
@@ -100,7 +101,7 @@
 		dec r22
 		brne dec_wait_loop
 		nop
-		
+	*/	
 	pop r24
 	pop r23
 	pop r22
@@ -129,9 +130,9 @@
  * Exists as a solid block in data memory. Each time "Enter station name x" is printed the pointer is aligned to relevant block of ten.
  * After this, every time a number is entered the pointer is incremented by 1 (10x 1byte numbers representing times to next station)
  */
-stationsMem .byte 110 ; 10*letters * 10 stations + 10 numbers (timings)
-stationTimes .byte 10 ; NOT USED CURRENTLY (24/10/17, Lach). Considering saving Names and Times separately
-stopTime .byte 1
+stationsMem: .byte 110 ; 10*letters * 10 stations + 10 numbers (timings)
+stationTimes: .byte 10 ; NOT USED CURRENTLY (24/10/17, Lach). Considering saving Names and Times separately
+stopTime: .byte 1
 
 
 .cseg
@@ -147,7 +148,7 @@ finalStr1: .db "Configuration complete.",0
 finalStr2: .db "Please wait 5 seconds.",0,0
 
 RESET:
-    zloadaddr stopTime ; point z to memory allocated to hold the stop time
+   ; zloadaddr stopTime ; point z to memory allocated to hold the stop time
 	clr tempVar
 	ldi temp, low(RAMEND)
 	out SPL, temp
@@ -229,7 +230,9 @@ keypad_scanner:
 		cpi col, 3 ; if column is 3 we have a letter
 		breq letters
 		cpi row, 3 ; if row is 3 we have a symbol or 0
-		breq symbols
+		brne NUMBERS
+		rjmp symbols
+	NUMBERS:
 		mov temp, row ; otherwise we have a number (1-9)
 		lsl temp ; temp = row * 2
 		add temp, row ; temp = row * 3
@@ -241,8 +244,10 @@ keypad_scanner:
 		cpi programCounter, 1
 		breq SKIP_MATHS
 		cpi programCounter, 2
-		breq SAVE
+		breq SKIP_MATHS
 		cpi programCounter, 3
+		breq SKIP_MATHS
+		cpi programCounter, 4
 		breq SKIP_MATHS
 		clr r22
 		cp numStats,r22 ; check if numStats already has a digit
@@ -251,7 +256,7 @@ keypad_scanner:
 		mul numStats, r22
 		mov numStats, r0
 		add numStats, temp
-        rjmp SKIP_MATHS ; not actually skipping maths, but that label was in a convenient place
+        rjmp screen_write 
 	SKIP_MATHS:
 		subi temp, -48
         st x+, temp ; save time in data memory
@@ -267,10 +272,8 @@ keypad_scanner:
 		breq PRINT_SPACE
 		correct_last_num:
 			do_lcd_command 0b00010000 ; move cursor back 1 place
-            ld workingRegister, xl ; move x pointer back a space, to overwrite last letter
-            subi workingRegister, 1
-            st xl, workingRegister
 			wait_loop
+			; the following is the maths needed to calculate correct ASCII value
 			mov workingRegister, numPressed
 			subi workingRegister, 2
 			ldi display_counter, 3 ; display_counter is used as a working register here
@@ -281,11 +284,13 @@ keypad_scanner:
 			brlt no_change ; handles the lack of Q on a keyboard
 			subi workingRegister, -1
 		no_change:
+			sbiw xh:xl, 1
 			mov temp, workingRegister
             st x+, temp ; store (at this point it should be a letter?? ASCII value? TODO: check) letter in data mem
 			rjmp screen_write
 	PRINT_SPACE:
 		ldi temp, 32
+		st x+, temp 
 		rjmp screen_write
 	symbols:
 		cpi col, 0 ; check if we have a star
@@ -327,6 +332,8 @@ NAME_STATIONS:
 	rjmp TOO_MANY_STATIONS
 STAT_AMOUNT_OK:
 	clr holder
+	;ldi xl, low(stationsMem<<1)
+	;ldi xh, high(stationsMem<<1)
 PRINT_NAMING_STRINGS:	
 	inc holder
 	cp holder, numStats
@@ -337,7 +344,6 @@ PRINT_NAMING_STRINGS:
 CONTINUE:
 	do_lcd_command 0b00000001
 	load_string nameStatStr
-    rcall adjustX ; set pointer to (holder - 1)*10 + stationsMem
 	rcall PRINT_STR
 	mov workingRegister, holder
 	subi workingRegister, -48
@@ -349,6 +355,7 @@ CONTINUE:
 	wait_loop
 	wait_loop
 	newline
+	rcall adjustX ; set pointer to (holder - 1)*10 + stationsMem
 	jmp keypad_scanner
 
 TOO_MANY_STATIONS: ; gives error message and makes user re-enter a number less than 10
@@ -403,6 +410,7 @@ PRINT_TIMING_STRINGS:
 	rcall SCROLL_CURSOR
 	wait_loop
 	newline
+	xloadaddr stationTimes
 	jmp keypad_scanner
 
 MONO_STOP_TIME:
@@ -415,6 +423,7 @@ MONO_STOP_TIME:
 	newline
 	load_string stopTimeStr2 ; load second part of string that asks for stop time
 	rcall PRINT_STR
+	xloadaddr stopTime
 	jmp keypad_scanner
 	FINAL_STRING:
 		do_lcd_command 0b00000001
@@ -438,8 +447,16 @@ MONO_STOP_TIME:
 		brne L1
 		rjmp PC+1
 		do_lcd_command 0b00000001 ; clear screen
-		do_lcd_data_const '#' ; print a hash when to show the 5 seconds is up then loop forever
-		halt: rjmp halt
+		
+		
+RUN_MONORAIL:
+	clr holder ; this will be used to determine what station the monorail is up to 
+	inc holder
+	rcall adjustX
+	ld r17, x+
+	do_lcd_data r17
+	halt: rjmp halt
+
 
 
 PRINT_STR:
@@ -575,17 +592,18 @@ sleep_5ms:
  adjustX:
     ; prelogue
     push working2
-
+	push workingRegister
     ; body
     mov workingRegister, holder
+	subi workingRegister, 1
     ldi working2, 10
     mul workingRegister, working2
     mov workingRegister, r0 ; number already saved * 10 (to get the offset from initial pointer)
-    xloaddaddr stationsMem ; load initial pointer to x
-    ld working2, xl
-    add working2, workingRegister ; add offset to initial pointer
-    st xl, working2 ; store as x
-
+    xloadaddr stationsMem ; load initial pointer to x
+    add xl, workingRegister ; add offset to initial pointer
+	clr working2
+	adc xh, working2
     ; prologue
+	pop workingRegister
     pop working2
     ret;
