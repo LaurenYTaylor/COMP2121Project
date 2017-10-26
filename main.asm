@@ -776,9 +776,11 @@ PRINT_TIME:
 
 
 Timer0OVF:
+    cpi programCounter, 4
+    brlt return
     mov workingRegister, atStation
     cpi workingRegister, 1
-    breq no_flash
+    breq return
     push temp
     push symbol
     push temp2
@@ -818,3 +820,5 @@ Timer0OVF:
     pop temp2        
     pop symbol
     pop temp
+    return:
+    ret
