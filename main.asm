@@ -23,7 +23,8 @@
 .def holder=r4
 .def holder2=r5
 .def lastNum=r6
-.def atStation=r9
+.def stoppingTime=r7
+.def stopAtStat=r8
 .def numPressed = r13
 .def tempVar = r14
 .def numLetters = r15
@@ -40,7 +41,6 @@
 .equ INITCOLMASK = 0xEF
 .equ INITROWMASK = 0x01
 .equ ROWMASK = 0x0F
-.equ FLASHMASK = 0b00000011
 
 .macro xloadaddr ; load address of data mem into x
 	ldi xl, low(@0<<1)
@@ -136,6 +136,7 @@
 	clr display_counter
 .endmacro
 .macro newline
+	push display_counter
 	do_lcd_command 0b00000010 ; move cursor home
 	clr display_counter
 	INC_CURSOR2: ; move cursor to the first place in the second line
@@ -147,6 +148,7 @@
 	FIN_INC2:
 		do_lcd_command 0b00000110 ; increment, no display shift
 		do_lcd_command 0b00001111 ; Cursor on, bar, blink
+	pop display_counter
 .endmacro
 
 .dseg
@@ -157,8 +159,6 @@
 stationsMem: .byte 110 ; 11*letters * 10 stations
 stationTimes: .byte 10 ; 
 stopTime: .byte 1
-sixthOfSecondTimer: .byte 2
-flashON: .byte 1
 
 
 .cseg
@@ -168,12 +168,6 @@ jmp RESET
 jmp EXT_INT0
 .org INT1addr ; INT1addr is the address of EXT_INT1
 jmp EXT_INT1
-.org OVF0addr
-jmp Timer0OVF
-jmp DEFAULT
-DEFAULT: reti
-
-
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
 nameStatStr: .db "Please type the name of Station ",0,0
 tooManyStats: .db "Number of stations must be from 1 to 10.",0,0
@@ -185,18 +179,26 @@ stopTimeStr2: .db "station is: ",0,0
 finalStr1: .db "Configuration complete.",0
 finalStr2: .db "Please wait 5 seconds.",0,0
 incorrectStr: .db "The time must be from 1 to 10.",0,0
+nextStatStr: .db "Next Station: ",0,0
 
 RESET:
-    clr lastNum
-    yloadaddr flashON
-    st y, lastNum
-    yloadaddr sixthOfSecondTimer
    ; zloadaddr stopTime ; point z to memory allocated to hold the stop time
+    clr lastNum
 	clr tempVar
 	ldi temp, low(RAMEND)
 	out SPL, temp
 	ldi temp, high(RAMEND)
 	out SPH, temp
+	ldi temp, (1<<PE4)
+	out DDRE, temp
+	ldi temp, (1<<WGM30)|(1<<COM3B1)
+	sts TCCR3A, temp
+	ldi temp, (1<<CS31)
+	STS TCCR3B, temp
+	ldi temp, 0x00
+	STS OCR3BL, temp
+	clr temp
+	sts OCR3BH, temp
 	ldi temp, PORTLDIR ; columns are outputs, rows are inputs
 	STS DDRL, temp     ; cannot use out
 	ser temp
@@ -233,9 +235,8 @@ EXT_INT0:
 	push temp
 	in temp, SREG
 	push temp
-	ldi r17, '0' 
-	do_lcd_data r17
-	wait_loop
+	ldi workingRegister, 1
+	mov stopAtStat, workingRegister
 	pop temp
 	out SREG, temp
 	pop temp
@@ -246,9 +247,8 @@ EXT_INT1:
 	push temp
 	in temp, SREG
 	push temp
-	ldi r17, '1'
-	do_lcd_data r17
-	wait_loop
+	ldi workingRegister, 1
+	mov stopAtStat, workingRegister
 	pop temp
 	out SREG, temp
 	pop temp
@@ -370,7 +370,6 @@ keypad_scanner:
 			brlt no_change ; handles the lack of Q on a keyboard
 			subi workingRegister, -1
 		no_change:
-			sbiw xh:xl, 1
 			mov temp, workingRegister
             st x+, temp ;
 			rjmp screen_write
@@ -574,31 +573,79 @@ MONO_STOP_TIME:
 		newline
 		load_string finalStr2 ; load the second part of configuration complete string
 		rcall PRINT_STR
-		ldi  r18, 2 ; WAIT 5 SECONDS as per assignment specification
-		ldi  r19, 150
-		ldi  r20, 216
-		ldi  r21, 9
-		L1: dec  r21
-		brne L1
-		dec  r20
-		brne L1
-		dec  r19
-		brne L1
-		dec  r18
-		brne L1
-		rjmp PC+1
+		wait_one_sec ; wait 5 seconds
+		wait_one_sec
+		wait_one_sec
+		wait_one_sec
+		wait_one_sec
 		do_lcd_command 0b00000001 ; clear screen
-		
-		
+
+
 RUN_MONORAIL:
-	clr holder ; this will be used to determine what station the monorail is up to 
-	xloadaddr stationTimes
-    clr workingRegister
-    st y, workingRegister
-KEEP_PRINTING:
-	ld r17, x+
-	rcall PRINT_TIME
-	halt: rjmp halt
+	clr holder
+	clr working2
+	zloadaddr stopTime
+	ld r25, z
+	mov stoppingTime, temp
+INC_STATION2:
+	do_lcd_command 0b00000001
+	ldi temp, 0x4A
+	STS OCR3BL, temp
+	clr temp
+	sts OCR3BH, temp
+	inc holder
+	cp numStats, holder
+	brlt RUN_MONORAIL
+	clr stopAtStat
+GOTO_NEXT_STAT:
+	load_string nextStatStr ;
+	rcall FAST_PRINT_STR
+	newline
+	rcall adjustX
+PRINT_NEXT_STAT:
+	ld r25, x+
+	tst r25
+	breq TRAVELLING
+	do_lcd_data r25
+	rjmp PRINT_NEXT_STAT
+TRAVELLING:
+	rcall timesAdjustY
+	ld r25, y
+TRAVEL_TIME:
+	cpi r25, 0
+	breq SHOULD_MONO_STOP
+	wait_one_sec
+	dec r25
+	rjmp TRAVEL_TIME
+SHOULD_MONO_STOP:
+	mov workingRegister, stopAtStat
+	cpi workingRegister,1 
+	breq CURRENT_STATION_NAME
+	rjmp INC_STATION2
+CURRENT_STATION_NAME:
+	ldi temp, 0x00
+	STS OCR3BL, temp
+	clr temp
+	sts OCR3BH, temp
+	do_lcd_command 0b00000001
+	rcall adjustX
+PRINTING_CUR_STAT:
+	ld r25, x+
+	tst r25
+	breq WAIT_AT_STAT
+	do_lcd_data r25
+	rjmp PRINTING_CUR_STAT
+WAIT_AT_STAT:
+	mov workingRegister, stoppingTime
+WAIT_TIME:
+	cpi workingRegister, 0
+	breq BACK_TO_START
+	wait_one_sec
+	dec workingRegister
+	rjmp WAIT_TIME
+BACK_TO_START:
+	rjmp INC_STATION2
+
 
 
 
@@ -644,6 +691,16 @@ PRINT_STR:
 		FIN_INC:
 			do_lcd_command 0b00000110 ; increment, no display shift
 			do_lcd_command 0b00001111 ; Cursor on, bar, blink
+	ret
+
+FAST_PRINT_STR:
+		lpm r17, z+ ; get value of byte of string then increment pointer
+		tst r17 ; test if the value of the byte is null (i.e. it's the end of the string)
+		breq END_FAST_PRINT_STR
+		do_lcd_data r17 ; print the character
+		inc display_counter
+		rjmp FAST_PRINT_STR
+	END_FAST_PRINT_STR:
 	ret
 
 
@@ -751,6 +808,20 @@ sleep_5ms:
     pop working2
     ret;
 
+timesAdjustY:
+	push working2
+	push workingRegister
+	; body
+	mov workingRegister, holder
+	subi workingRegister, 1
+	yloadaddr stationTimes ; load initial pointer to x
+	add yl, workingRegister ; add offset to initial pointer
+	clr working2
+	adc yh, working2
+	; prologue
+	pop workingRegister
+	pop working2
+	ret;
 
 PRINT_TIME:
 	;pre
@@ -774,51 +845,3 @@ PRINT_TIME:
 	pop workingRegister
 	ret
 
-
-Timer0OVF:
-    cpi programCounter, 4
-    brlt return
-    mov workingRegister, atStation
-    cpi workingRegister, 1
-    breq return
-    push temp
-    push symbol
-    push temp2
-
-       
-    yloadaddr sixthOfSecondTimer
-    ld workingRegister, y+
-    ld working2, y
-    subi workingRegister, low(-1)
-    sbci workingRegister, low(-1)
-    cpi workingRegister, low(1302) ; 7812 / 6
-    ldi temp, high(1302)
-    cpc working2, temp
-    brne no_flash
-    yloadaddr flashON
-    ld temp2, y
-    cpi temp2, 1
-    breq flash_off
-    ldi symbol, 0b00000000
-    out PORTC, symbol
-    ser temp2
-    st y, temp2
-    rjmp end_flash
-    flash_off:
-        ldi symbol, FLASHMASK
-        out PORTC, symbol
-        clr temp2
-        st y, temp2
-    end_flash:
-        clr workingRegister
-        clr working2
-    no_flash:
-        yloadaddr sixthOfSecondTimer
-        st y+, workingRegister
-        st y, working2
-
-    pop temp2        
-    pop symbol
-    pop temp
-    return:
-    ret
