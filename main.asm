@@ -43,6 +43,13 @@
 .equ INITROWMASK = 0x01
 .equ ROWMASK = 0x0F
 
+.macro clearsixthtimer
+    push workingRegister
+    yloadaddr sixthOfSecondTimer
+    clr workingRegister
+    st y, workingRegister
+    pop workingRegister
+.endmacro
 .macro xloadaddr ; load address of data mem into x
 	ldi xl, low(@0<<1)
 	ldi xh, high(@0<<1)
@@ -54,13 +61,6 @@
 .macro zloadaddr ;
 	ldi zl, low(@0<<1)
 	ldi zh, high(@0<<1)
-.endmacro
-.macro clearsixthtimer
-    push workingRegister
-    yloadaddr sixthOfSecondTimer
-    clr workingRegister
-    st y, workingRegister
-    pop workingRegister
 .endmacro
 
 .macro do_lcd_command
@@ -167,9 +167,8 @@
 stationsMem: .byte 110 ; 11*letters * 10 stations
 stationTimes: .byte 10 ; 
 stopTime: .byte 1
-sixthOfSecondTimer .byte 2
-flashON .byte 1
-
+sixthOfSecondTimer: .byte 2
+flashON: .byte 1
 
 .cseg
 .org 0x0
@@ -214,6 +213,7 @@ RESET:
 	ldi temp, PORTLDIR ; columns are outputs, rows are inputs
 	STS DDRL, temp     ; cannot use out
 	ser temp
+	out DDRC, temp
 	out DDRF, temp
 	out DDRA, temp
 	clr temp
@@ -244,23 +244,13 @@ RESET:
 	rjmp init
 
 EXT_INT0:
-	push temp
-	in temp, SREG
-	push temp
-	ldi workingRegister, 1
-	mov stopAtStat, workingRegister
-	pop temp
-	out SREG, temp
-	pop temp
-	sbi EIFR, INT0
-	reti
+	rjmp EXT_INT1
 
 EXT_INT1:
 	push temp
 	in temp, SREG
 	push temp
-	ldi workingRegister, 1
-	mov stopAtStat, workingRegister
+	inc stopAtStat
 	pop temp
 	out SREG, temp
 	pop temp
@@ -474,8 +464,6 @@ NAME_STATIONS:
 	rjmp TOO_MANY_STATIONS
 STAT_AMOUNT_OK:
 	clr holder
-	;ldi xl, low(stationsMem<<1)
-	;ldi xh, high(stationsMem<<1)
 PRINT_NAMING_STRINGS:	
 	inc holder
 	cp holder, numStats
@@ -596,9 +584,7 @@ MONO_STOP_TIME:
 RUN_MONORAIL:
 	clr holder
 	clr working2
-	zloadaddr stopTime
-	ld r25, z
-	mov stoppingTime, temp
+	clr stopAtStat
 INC_STATION2:
 	do_lcd_command 0b00000001
 	ldi temp, 0x4A
@@ -608,12 +594,20 @@ INC_STATION2:
 	inc holder
 	cp numStats, holder
 	brlt RUN_MONORAIL
-	clr stopAtStat
 GOTO_NEXT_STAT:
 	load_string nextStatStr ;
 	rcall FAST_PRINT_STR
 	newline
+	inc holder
+	cp numStats, holder
+	brlt ZERO_HOLDER
 	rcall adjustX
+	rjmp PRINT_NEXT_STAT
+ZERO_HOLDER:
+	clr holder
+	inc holder
+	rcall adjustX
+	add holder, numStats
 PRINT_NEXT_STAT:
 	ld r25, x+
 	tst r25
@@ -621,6 +615,7 @@ PRINT_NEXT_STAT:
 	do_lcd_data r25
 	rjmp PRINT_NEXT_STAT
 TRAVELLING:
+	dec holder
 	rcall timesAdjustY
 	ld r25, y
 TRAVEL_TIME:
@@ -632,17 +627,24 @@ TRAVEL_TIME:
 SHOULD_MONO_STOP:
 	mov workingRegister, stopAtStat
 	cpi workingRegister,1 
-	breq CURRENT_STATION_NAME
+	brge CURRENT_STATION_NAME
 	rjmp INC_STATION2
 CURRENT_STATION_NAME:
-    ser workingRegister
-    mov atStation, workingRegister
 	ldi temp, 0x00
 	STS OCR3BL, temp
 	clr temp
 	sts OCR3BH, temp
 	do_lcd_command 0b00000001
+	inc holder
+	cp numStats, holder
+	brlt ZERO_HOLDER2
 	rcall adjustX
+	rjmp PRINTING_CUR_STAT
+ZERO_HOLDER2:
+	clr holder
+	inc holder
+	rcall adjustX
+	add holder, numStats
 PRINTING_CUR_STAT:
 	ld r25, x+
 	tst r25
@@ -650,7 +652,8 @@ PRINTING_CUR_STAT:
 	do_lcd_data r25
 	rjmp PRINTING_CUR_STAT
 WAIT_AT_STAT:
-	mov workingRegister, stoppingTime
+	zloadaddr stopTime
+	ld workingRegister, z
 WAIT_TIME:
 	cpi workingRegister, 0
 	breq BACK_TO_START
@@ -658,9 +661,8 @@ WAIT_TIME:
 	dec workingRegister
 	rjmp WAIT_TIME
 BACK_TO_START:
-    clr workingRegister
-    mov atStation, workingRegister 
-    clearsixthtimer
+	dec holder
+	clr stopAtStat
 	rjmp INC_STATION2
 
 
@@ -865,7 +867,7 @@ PRINT_TIME:
 TIMER0OVF:
     ; conditions of overflow mattering
     cpi programCounter, 4
-    breq return
+    brne return
     mov workingRegister, atStation
     cpi workingRegister, 1
     breq return
@@ -891,7 +893,7 @@ TIMER0OVF:
     out PORTC, symbol
     ser temp2
     flash_off:
-        ldi symbol, FLASHMASK
+       ; ldi symbol, FLASHMASK
         out portc, symbol
         clr temp2
         st y, temp2
