@@ -22,6 +22,7 @@
 .def numStats=r3
 .def holder=r4
 .def holder2=r5
+.def lastNum=r6
 .def numPressed = r13
 .def tempVar = r14
 .def numLetters = r15
@@ -72,6 +73,28 @@
 	 rcall lcd_data
 	 rcall lcd_wait
 	pop r16
+.endmacro
+
+.macro wait_one_sec
+	push r22
+	push r23
+	push r24
+
+	ldi  r22, 82
+    ldi  r23, 43
+    ldi  r24, 0
+	L2: dec  r24
+		brne L2
+		dec  r23
+		brne L2
+		dec  r22
+		brne L2
+		lpm
+		nop
+
+	pop r24
+	pop r23
+	pop r22
 .endmacro
 
 .macro wait_loop
@@ -130,8 +153,8 @@
  * After this, every time a number is entered the pointer is incremented by 1 (10x 1byte numbers representing times to next station)
  */
 stationsMem: .byte 110 ; 11*letters * 10 stations
-stationTimes: .byte 20 ; 
-stopTime: .byte 2
+stationTimes: .byte 10 ; 
+stopTime: .byte 1
 
 
 .cseg
@@ -143,7 +166,7 @@ jmp EXT_INT0
 jmp EXT_INT1
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
 nameStatStr: .db "Please type the name of Station ",0,0
-tooManyStats: .db "Number of stations must be less than 10.",0,0
+tooManyStats: .db "Number of stations must be from 1 to 10.",0,0
 timingStr1: .db "Time from Station ",0,0
 timingStr2: .db " to Station ",0,0
 timingStr3: .db " is:",0,0
@@ -151,9 +174,11 @@ stopTimeStr1: .db "The stop time of the monorail at any",0,0
 stopTimeStr2: .db "station is: ",0,0
 finalStr1: .db "Configuration complete.",0
 finalStr2: .db "Please wait 5 seconds.",0,0
+incorrectStr: .db "The time must be from 1 to 10.",0,0
 
 RESET:
    ; zloadaddr stopTime ; point z to memory allocated to hold the stop time
+    clr lastNum
 	clr tempVar
 	ldi temp, low(RAMEND)
 	out SPL, temp
@@ -240,7 +265,7 @@ keypad_scanner:
 		breq nextcol ; if not go to the next column
 		ldi working2, INITROWMASK ; initialise row check
 		clr row ; initial row
-	rowloop:      
+	rowloop:
 		mov temp2, temp
 		and temp2, working2 ; check masked bit
 		brne skipconv ; if the result is non-zero,
@@ -282,14 +307,13 @@ keypad_scanner:
 		; to get the offset from 1
 		inc temp ; add 1. Value of switch is
 		; row*3 + col + 1.
+	START_MATHS:
 		mov numPressed, temp
 		cpi programCounter, 1
-		breq SKIP_MATHS
+		breq WRITE_NUM
 		cpi programCounter, 2
 		breq SKIP_MATHS
 		cpi programCounter, 3
-		breq SKIP_MATHS
-		cpi programCounter, 4
 		breq SKIP_MATHS
 		clr r22
 		cp numStats,r22 ; check if numStats already has a digit
@@ -298,8 +322,16 @@ keypad_scanner:
 		mul numStats, r22
 		mov numStats, r0
 		add numStats, temp
+		subi temp, -48
+		rjmp screen_write
 	SKIP_MATHS:
-        st x+, temp ; save time in data memory
+		; multiply lastNum by ten, add temp, store in lastNum
+		ldi workingRegister, 10
+		mul workingRegister, lastNum
+		mov lastNum, r0
+		add lastNum, temp
+        st x, lastNum ; save time in data memory
+	WRITE_NUM:
 		subi temp, -48
 		rjmp screen_write
 	FIRST_DIGIT:
@@ -327,7 +359,7 @@ keypad_scanner:
 		no_change:
 			sbiw xh:xl, 1
 			mov temp, workingRegister
-            st x+, temp ; store (at this point it should be a letter?? ASCII value? TODO: check) letter in data mem
+            st x+, temp ;
 			rjmp screen_write
 	PRINT_SPACE:
 		ldi temp, 32
@@ -335,37 +367,71 @@ keypad_scanner:
 		rjmp screen_write
 	symbols:
 		cpi col, 0 ; check if we have a star
-		breq star
+		breq goto_star
 		cpi col, 1 ; or if we have zero
-		breq zero
+		breq goto_zero
 		do_lcd_command 0b00000001
 		cpi programCounter, 1
 		breq JUMP_TO_NAMING
 		cpi programCounter, 2
 		breq JUMP_TO_TIMING
 		cpi programCounter, 3
-		breq JUMP_TO_FINAL
+		breq goto_final
 		inc programCounter; if the programCounter is at zero, prepare to name stations
 		rjmp NAME_STATIONS
+	goto_final:
+		jmp JUMP_TO_FINAL
+	goto_zero:
+		jmp zero
+	goto_star:
+		jmp star
 	JUMP_TO_NAMING:
 		clr temp
 		st x+, temp
-		rjmp PRINT_NAMING_STRINGS ; if programCounter at one, keep asking for station names
+		jmp PRINT_NAMING_STRINGS ; if programCounter at one, keep asking for station names
 	JUMP_TO_TIMING:
-		clr temp
-		st x+, temp
+		ld workingRegister, x
+		cpi workingRegister, 11
+		brge NOT_TIME_OK
+		cpi workingRegister, 1
+		brge TIME_OK
+		NOT_TIME_OK:
+		load_string incorrectStr ; load the first part of the timing string
+		rcall PRINT_STR
+		wait_loop
+		wait_loop
+		clr lastNum
+		jmp PRINT_TIMING_STRINGS
+	TIME_OK:
+		ldi workingRegister, 1
+		add xl, workingRegister
+		clr lastNum
+		adc xh, lastNum
 		rjmp INC_STATION ; if programCounter at two, keep asking for travel times
 	JUMP_TO_FINAL:
-		clr temp
-		st x+, temp
-		rjmp FINAL_STRING ; if pC at three, jump to configuration complete string
+		ld workingRegister, x ; Confirem it's <= 10
+		cpi workingRegister, 11
+		brge NOT_GOOD_STOP_TIME
+		cpi workingRegister, 1
+		brge GOOD_STOP_TIME
+		NOT_GOOD_STOP_TIME:
+		load_string incorrectStr ; load the first part of the timing string
+		rcall PRINT_STR
+		wait_loop
+		wait_loop
+		clr lastNum
+		dec programCounter
+		jmp MONO_STOP_TIME
+		GOOD_STOP_TIME:
+			rjmp FINAL_STRING ; if pC at three, jump to configuration complete string
 	star:
 		ldi temp, '*' ; 42 is star in ASCII
 		do_lcd_command 0b00010000 ; turns * into a back button to fix typos
 		sbiw xh:xl, 1
 		rjmp set_decrementers
 	zero:
-		ldi temp, '0'
+		ldi temp, 0
+		rjmp START_MATHS
 	screen_write:
 		mov symbol, temp
 		do_lcd_data symbol
@@ -376,7 +442,11 @@ keypad_scanner:
 NAME_STATIONS:
 	ldi r22, 10
 	cp r22, numStats ; if 10 is less than numStats, tell the user they have entered too many stations 
+	brlt NOT_STAT_AMOUNT_OK
+	ldi r22, 1
+	cp numStats, r22
 	brge STAT_AMOUNT_OK
+	NOT_STAT_AMOUNT_OK:
 	rjmp TOO_MANY_STATIONS
 STAT_AMOUNT_OK:
 	clr holder
@@ -394,9 +464,19 @@ CONTINUE:
 	load_string nameStatStr
 	rcall PRINT_STR
 	mov workingRegister, holder
+	cpi workingRegister, 10
+	brlt LOW_STATION_NUM
+	ldi workingRegister, '1'
+	do_lcd_data workingRegister
+	ldi workingRegister, '0'
+	do_lcd_data workingRegister
+	rjmp PRINT_END_STAT_NAME_ASK
+LOW_STATION_NUM:
+	mov workingRegister, holder
 	subi workingRegister, -48
 	do_lcd_data workingRegister
 	subi workingRegister, 48
+PRINT_END_STAT_NAME_ASK:
 	wait_loop
 	do_lcd_command 0b00011000
 	do_lcd_data_const ':'
@@ -421,6 +501,7 @@ TOO_MANY_STATIONS: ; gives error message and makes user re-enter a number less t
 ENTER_TIMES:
 	inc programCounter
 	clr holder
+	xloadaddr stationTimes
 INC_STATION:
 	clr holder2
 	inc holder
@@ -458,7 +539,6 @@ PRINT_TIMING_STRINGS:
 	rcall SCROLL_CURSOR
 	wait_loop
 	newline
-	xloadaddr stationTimes
 	jmp keypad_scanner
 
 MONO_STOP_TIME:
@@ -499,15 +579,10 @@ MONO_STOP_TIME:
 		
 RUN_MONORAIL:
 	clr holder ; this will be used to determine what station the monorail is up to 
-	inc holder
-	inc holder
-	rcall adjustX
+	xloadaddr stationTimes
 KEEP_PRINTING:
 	ld r17, x+
-	tst r17
-	breq halt
-	do_lcd_data r17
-	rjmp KEEP_PRINTING
+	rcall PRINT_TIME
 	halt: rjmp halt
 
 
@@ -660,3 +735,43 @@ sleep_5ms:
 	pop workingRegister
     pop working2
     ret;
+
+
+PRINT_TIME:
+	;pre
+	push workingRegister
+	push working2
+
+	cpi r17, 10
+	breq TEN
+	subi r17, -48
+	do_lcd_data r17
+	rjmp END_PRINT
+	TEN:
+		ldi workingRegister, '1'
+		do_lcd_data workingRegister
+		ldi workingRegister, '0'
+		do_lcd_data workingRegister
+
+	; post
+	END_PRINT:
+	pop working2
+	pop workingRegister
+	ret
+
+WAIT_ONE_SEC: ; one second wait loop, to be called with rcall
+	;pre
+	push workingRegister
+
+	; body
+	clr workingRegister
+wait_one_sec_loop:
+	wait_loop
+	inc workingRegister
+	cpi workingRegister, 5
+	brlt wait_one_sec_loop
+
+	; post
+	pop working2
+	pop workingRegister
+	ret
