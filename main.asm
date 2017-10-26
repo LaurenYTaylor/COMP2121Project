@@ -25,6 +25,7 @@
 .def lastNum=r6
 .def stoppingTime=r7
 .def stopAtStat=r8
+.def atStation = r9
 .def numPressed = r13
 .def tempVar = r14
 .def numLetters = r15
@@ -53,6 +54,13 @@
 .macro zloadaddr ;
 	ldi zl, low(@0<<1)
 	ldi zh, high(@0<<1)
+.endmacro
+.macro clearsixthtimer
+    push workingRegister
+    yloadaddr sixthOfSecondTimer
+    clr workingRegister
+    st y, workingRegister
+    pop workingRegister
 .endmacro
 
 .macro do_lcd_command
@@ -159,6 +167,8 @@
 stationsMem: .byte 110 ; 11*letters * 10 stations
 stationTimes: .byte 10 ; 
 stopTime: .byte 1
+sixthOfSecondTimer .byte 2
+flashON .byte 1
 
 
 .cseg
@@ -168,6 +178,8 @@ jmp RESET
 jmp EXT_INT0
 .org INT1addr ; INT1addr is the address of EXT_INT1
 jmp EXT_INT1
+.org OVF0addr
+jmp TIMER0OVF
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
 nameStatStr: .db "Please type the name of Station ",0,0
 tooManyStats: .db "Number of stations must be from 1 to 10.",0,0
@@ -623,6 +635,8 @@ SHOULD_MONO_STOP:
 	breq CURRENT_STATION_NAME
 	rjmp INC_STATION2
 CURRENT_STATION_NAME:
+    ser workingRegister
+    mov atStation, workingRegister
 	ldi temp, 0x00
 	STS OCR3BL, temp
 	clr temp
@@ -644,6 +658,9 @@ WAIT_TIME:
 	dec workingRegister
 	rjmp WAIT_TIME
 BACK_TO_START:
+    clr workingRegister
+    mov atStation, workingRegister 
+    clearsixthtimer
 	rjmp INC_STATION2
 
 
@@ -845,3 +862,50 @@ PRINT_TIME:
 	pop workingRegister
 	ret
 
+TIMER0OVF:
+    ; conditions of overflow mattering
+    cpi programCounter, 4
+    breq return
+    mov workingRegister, atStation
+    cpi workingRegister, 1
+    breq return
+    ; prelogue
+    push temp
+    push temp2
+    push symbol
+
+    yloadaddr sixthOfSecondTimer
+    ld workingRegister, y+ ; load low byte --------------- TEST THIS WILL WORK, then remove this comment when satisfied
+    ld working2, y ; load high byte
+    subi workingRegister, low(-1)
+    sbci working2, high(-1)
+    cpi workingRegister, low(1302) ; 7812 / 6
+    ldi temp, high(1302)
+    cpc working2, temp
+    brne no_flash
+    yloadaddr flashON
+    ld temp2, y
+    cpi temp2, 1
+    breq flash_off
+    ldi symbol, 0b00000000
+    out PORTC, symbol
+    ser temp2
+    flash_off:
+        ldi symbol, FLASHMASK
+        out portc, symbol
+        clr temp2
+        st y, temp2
+    end_flash:
+        clr workingRegister
+        clr working2
+    no_flash:
+        yloadaddr sixthOfSecondTimer
+        st y+, workingRegister
+        st y, working2
+
+    pop symbol
+    pop temp2
+    pop temp
+
+    return:
+    ret
