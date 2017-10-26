@@ -42,14 +42,8 @@
 .equ INITCOLMASK = 0xEF
 .equ INITROWMASK = 0x01
 .equ ROWMASK = 0x0F
+.equ FLASHMASK=0b11111111
 
-.macro clearsixthtimer
-    push workingRegister
-    yloadaddr sixthOfSecondTimer
-    clr workingRegister
-    st y, workingRegister
-    pop workingRegister
-.endmacro
 .macro xloadaddr ; load address of data mem into x
 	ldi xl, low(@0<<1)
 	ldi xh, high(@0<<1)
@@ -177,8 +171,8 @@ jmp RESET
 jmp EXT_INT0
 .org INT1addr ; INT1addr is the address of EXT_INT1
 jmp EXT_INT1
-.org OVF0addr
-jmp TIMER0OVF
+;.org OVF0addr ; address of interrupt
+;jmp Timer0OVF ; jump to interrupt handler
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
 nameStatStr: .db "Please type the name of Station ",0,0
 tooManyStats: .db "Number of stations must be from 1 to 10.",0,0
@@ -239,6 +233,11 @@ RESET:
 	in temp, EIMSK
 	ori temp, (1<<INT0) | (1<<INT1)
 	out EIMSK, temp
+	ldi temp, 0b00000010
+    out TCCR0B, temp
+    ldi temp, 1<<TOIE0
+    sts TIMSK0, temp
+	clr temp
 	clr numStats
 	clr programCounter
 	rjmp init
@@ -580,7 +579,7 @@ MONO_STOP_TIME:
 		wait_one_sec
 		do_lcd_command 0b00000001 ; clear screen
 
-
+inc programCounter
 RUN_MONORAIL:
 	clr holder
 	clr working2
@@ -634,6 +633,8 @@ CURRENT_STATION_NAME:
 	STS OCR3BL, temp
 	clr temp
 	sts OCR3BH, temp
+	ldi programCounter, 4
+	inc atStation
 	do_lcd_command 0b00000001
 	inc holder
 	cp numStats, holder
@@ -663,6 +664,7 @@ WAIT_TIME:
 BACK_TO_START:
 	dec holder
 	clr stopAtStat
+	clr atStation
 	rjmp INC_STATION2
 
 
@@ -863,19 +865,19 @@ PRINT_TIME:
 	pop working2
 	pop workingRegister
 	ret
-
-TIMER0OVF:
-    ; conditions of overflow mattering
-    cpi programCounter, 4
+	/*
+	TIMER0OVF:
+	push working2
+	in working2, SREG ; prologue
+	cpi programCounter, 4
     brne return
     mov workingRegister, atStation
     cpi workingRegister, 1
-    breq return
+    brlt return
     ; prelogue
     push temp
     push temp2
     push symbol
-
     yloadaddr sixthOfSecondTimer
     ld workingRegister, y+ ; load low byte --------------- TEST THIS WILL WORK, then remove this comment when satisfied
     ld working2, y ; load high byte
@@ -893,7 +895,7 @@ TIMER0OVF:
     out PORTC, symbol
     ser temp2
     flash_off:
-       ; ldi symbol, FLASHMASK
+        ldi symbol, FLASHMASK
         out portc, symbol
         clr temp2
         st y, temp2
@@ -904,10 +906,12 @@ TIMER0OVF:
         yloadaddr sixthOfSecondTimer
         st y+, workingRegister
         st y, working2
-
+		
     pop symbol
     pop temp2
     pop temp
 
     return:
-    ret
+	out SREG, working2 ; prologue
+	pop working2
+    reti*/
