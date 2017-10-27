@@ -869,6 +869,7 @@ PRINT_TIME:
 	TIMER0OVF:
 	push working2
 	in working2, SREG ; prologue
+	push working2
 	cpi programCounter, 4
     brne return
     mov workingRegister, atStation
@@ -912,6 +913,7 @@ PRINT_TIME:
     pop temp
 
     return:
+	pop working2
 	out SREG, working2 ; prologue
 	pop working2
     reti*/
