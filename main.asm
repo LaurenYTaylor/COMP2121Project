@@ -26,6 +26,7 @@
 .def stoppingTime=r7
 .def stopAtStat=r8
 .def atStation = r9
+.def letterCounter = r10
 .def numPressed = r13
 .def tempVar = r14
 .def numLetters = r15
@@ -42,7 +43,7 @@
 .equ INITCOLMASK = 0xEF
 .equ INITROWMASK = 0x01
 .equ ROWMASK = 0x0F
-.equ FLASHMASK=0b11111111
+.equ FLASHMASK = 0b11111111
 
 .macro xloadaddr ; load address of data mem into x
 	ldi xl, low(@0<<1)
@@ -163,16 +164,18 @@ stationTimes: .byte 10 ;
 stopTime: .byte 1
 sixthOfSecondTimer: .byte 2
 flashON: .byte 1
+monoRunning: .byte 1
 
 .cseg
 .org 0x0
-jmp RESET
-.org INT0addr ; INT0addr is the address of EXT_INT0
-jmp EXT_INT0
-.org INT1addr ; INT1addr is the address of EXT_INT1
-jmp EXT_INT1
-;.org OVF0addr ; address of interrupt
-;jmp Timer0OVF ; jump to interrupt handler
+	jmp RESET
+	jmp EXT_INT ; Handle PB0
+	jmp EXT_INT; Handle PB1
+.org OVF0addr ; address of interrupt
+	jmp Timer0OVF ; jump to interrupt handler
+	jmp DEFAULT ; defualt for other interrupts
+	DEFAULT: reti ; do nothing for other interrupts
+
 numStatStr: .db "Please type the max number of stations: ",0,0 ;<- these zeros add some kind of padding that stops weird characters been printed at the end for some reason
 nameStatStr: .db "Please type the name of Station ",0,0
 tooManyStats: .db "Number of stations must be from 1 to 10.",0,0
@@ -189,6 +192,7 @@ nextStatStr: .db "Next Station: ",0,0
 RESET:
    ; zloadaddr stopTime ; point z to memory allocated to hold the stop time
     clr lastNum
+	mov letterCounter, lastNum
 	clr tempVar
 	ldi temp, low(RAMEND)
 	out SPL, temp
@@ -211,6 +215,8 @@ RESET:
 	out DDRF, temp
 	out DDRA, temp
 	clr temp
+	sts monoRunning, temp
+	out PORTC, temp
 	out PORTF, temp
 	out PORTA, temp
 	do_lcd_command 0b00111000 ; 2x5x7
@@ -242,10 +248,8 @@ RESET:
 	clr programCounter
 	rjmp init
 
-EXT_INT0:
-	rjmp EXT_INT1
 
-EXT_INT1:
+EXT_INT:
 	push temp
 	in temp, SREG
 	push temp
@@ -372,6 +376,12 @@ keypad_scanner:
 			subi workingRegister, -1
 		no_change:
 			mov temp, workingRegister
+			mov workingRegister, letterCounter
+			cpi workingRegister, 10
+			brlt store_in_mem
+			rjmp screen_write
+		store_in_mem:
+			inc letterCounter
             st x+, temp ;
 			rjmp screen_write
 	PRINT_SPACE:
@@ -472,6 +482,7 @@ PRINT_NAMING_STRINGS:
 	rjmp ENTER_TIMES
 CONTINUE:
 	do_lcd_command 0b00000001
+	clr letterCounter
 	load_string nameStatStr
 	rcall PRINT_STR
 	mov workingRegister, holder
@@ -582,6 +593,9 @@ MONO_STOP_TIME:
 inc programCounter
 RUN_MONORAIL:
 	clr holder
+	inc holder
+	sts monoRunning, holder
+	clr holder
 	clr working2
 	clr stopAtStat
 INC_STATION2:
@@ -633,7 +647,6 @@ CURRENT_STATION_NAME:
 	STS OCR3BL, temp
 	clr temp
 	sts OCR3BH, temp
-	ldi programCounter, 4
 	inc atStation
 	do_lcd_command 0b00000001
 	inc holder
@@ -653,6 +666,13 @@ PRINTING_CUR_STAT:
 	do_lcd_data r25
 	rjmp PRINTING_CUR_STAT
 WAIT_AT_STAT:
+	push workingRegister
+	clr workingRegister
+	sts sixthOfSecondTimer, workingRegister
+	sts sixthOfSecondTimer+1, workingRegister
+	ldi workingRegister, 1
+	mov atStation, workingRegister
+	pop workingRegister
 	zloadaddr stopTime
 	ld workingRegister, z
 WAIT_TIME:
@@ -865,55 +885,68 @@ PRINT_TIME:
 	pop working2
 	pop workingRegister
 	ret
-	/*
-	TIMER0OVF:
+	
+TIMER0OVF:
+	push programCounter
+	push workingRegister
 	push working2
 	in working2, SREG ; prologue
 	push working2
-	cpi programCounter, 4
-    brne return
+	lds working2, monoRunning
+	cpi working2, 0
+	breq clr_and_return 
+
     mov workingRegister, atStation
-    cpi workingRegister, 1
-    brlt return
+    cpi workingRegister, 0
+    breq clr_and_return
+
     ; prelogue
     push temp
     push temp2
     push symbol
-    yloadaddr sixthOfSecondTimer
-    ld workingRegister, y+ ; load low byte --------------- TEST THIS WILL WORK, then remove this comment when satisfied
-    ld working2, y ; load high byte
-    subi workingRegister, low(-1)
-    sbci working2, high(-1)
-    cpi workingRegister, low(1302) ; 7812 / 6
+
+    lds workingRegister, sixthOfSecondTimer ; load low byte
+    lds working2, sixthOfSecondTimer + 1 ; load high byte
+	ldi temp, 1
+    add workingRegister, temp
+	clr temp
+    adc working2, temp
     ldi temp, high(1302)
+    cpi workingRegister, low(1302) ; 7812 / 6
     cpc working2, temp
-    brne no_flash
-    yloadaddr flashON
-    ld temp2, y
+    brlt no_flash
+    lds temp2, flashON
     cpi temp2, 1
-    breq flash_off
-    ldi symbol, 0b00000000
-    out PORTC, symbol
-    ser temp2
+    brge flash_off
+    ldi symbol, FLASHMASK
+    ldi temp2, 1
+	rjmp end_flash
     flash_off:
-        ldi symbol, FLASHMASK
-        out portc, symbol
+        ldi symbol, 0b00000000
         clr temp2
-        st y, temp2
     end_flash:
+        out PORTC, symbol
+		sts flashON, temp2
         clr workingRegister
         clr working2
     no_flash:
-        yloadaddr sixthOfSecondTimer
-        st y+, workingRegister
-        st y, working2
+        sts sixthOfSecondTimer, workingRegister
+        sts sixthOfSecondTimer+1, working2
 		
     pop symbol
     pop temp2
     pop temp
+	rjmp return
 
+clr_and_return:
+	ldi symbol, 0b00000000
+    out PORTC, symbol
+    clr temp2
+    sts flashON, temp2
     return:
 	pop working2
 	out SREG, working2 ; prologue
 	pop working2
-    reti*/
+	pop workingRegister
+	pop programCounter
+    reti
